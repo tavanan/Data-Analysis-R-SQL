@@ -1,0 +1,607 @@
+---
+title: "Data Processing in R"
+author: "Nader Tavana"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### read data 
+```{r}
+Badges<-read.csv("Badges.csv.gz")
+Comments<-read.csv("Comments.csv.gz")
+PostLinks<-read.csv("PostLinks.csv.gz")
+Posts<-read.csv("Posts.csv.gz")
+Tags<-read.csv("Tags.csv.gz")
+Users<-read.csv("Users.csv.gz")
+Votes<-read.csv("Votes.csv.gz")
+
+```
+
+### load packages
+```{r echo = T,error=FALSE,warning=FALSE,message=FALSE,results = 'hide'}
+library(sqldf)
+library(dplyr)
+library(data.table)
+library(microbenchmark)
+```
+
+## 1)
+
+#### 1)sql solution
+```{r}
+#sql solution
+
+sqldf_solution1<-function(){sqldf("SELECT Posts.Title, RelatedTab.NumLinks
+FROM
+(SELECT RelatedPostId AS PostId, COUNT(*) AS NumLinks
+FROM PostLinks
+GROUP BY RelatedPostId) AS RelatedTab
+JOIN Posts ON RelatedTab.PostId=Posts.Id
+WHERE Posts.PostTypeId=1
+ORDER BY NumLinks DESC")}
+
+
+```
+#### Intuitive interpretation:
+We want to get the titles of questions ordered from the most linked one to the least linked one. We also want to see the number of times each question was linked.
+
+\
+
+#### 1)base functions
+```{r}
+#base functions
+base_functions_solution1<-function(){
+
+RelatedTab<-aggregate(PostLinks$RelatedPostId,by=list(PostLinks$RelatedPostId),FUN=length)
+
+colnames(RelatedTab)<-c("PostId","NumLinks")
+
+h<-merge(RelatedTab,Posts[Posts$PostTypeId==1,],by.x = "PostId",by.y = "Id")
+
+v<-h[,c("Title","NumLinks")]
+
+v<-v[order(-v$NumLinks),]}
+
+#comparing
+dplyr::all_equal(sqldf_solution1(),base_functions_solution1())
+
+
+```
+\
+
+#### 1)dplyr solution
+```{r}
+#dplyr solution
+dplyr_solutions1<-function(){RelatedTab2<-(PostLinks %>% count(RelatedPostId,name = "NumLinks") %>% rename(PostId=RelatedPostId))
+
+Post_RelatedTab<-inner_join(Posts,RelatedTab2,by=c("Id"="PostId"))
+
+Post_RelatedTab<-filter(Post_RelatedTab,PostTypeId==1)
+
+Title_NumLinks<-select(Post_RelatedTab,Title,NumLinks) 
+
+Title_NumLinks<-arrange(Title_NumLinks,desc(NumLinks))}
+
+#comparing
+dplyr::all_equal(sqldf_solution1(),dplyr_solutions1())
+
+
+```
+\
+
+#### 1)data.table solution
+```{r}
+
+setDT(PostLinks)
+setDT(Posts)
+
+datatable_solution1<-function(){
+
+RelatedTab3<-PostLinks[,.N,by=.(RelatedPostId)]
+
+setnames(RelatedTab3,c("N","RelatedPostId"),c("NumLinks","PostId"))
+
+Post_RelatedTab2<-merge.data.table(Posts,RelatedTab3,by.x="Id",by.y = "PostId")
+
+Post_RelatedTab2<-Post_RelatedTab2[PostTypeId==1]
+
+Title_NumLinks2<-Post_RelatedTab2[,.(Title,NumLinks)]
+
+Title_NumLinks2<-setorder(Title_NumLinks2,-NumLinks)}
+
+setDF(datatable_solution1())
+
+#comparing
+dplyr::all_equal(sqldf_solution1(),datatable_solution1())
+
+```
+\
+
+#### 1)compare the execution times
+```{r}
+library(microbenchmark)
+microbenchmark::microbenchmark(
+    sqldf1=sqldf_solution1,
+    base1=base_functions_solution1,
+    dplyr1=dplyr_solutions1,
+    data.table1=datatable_solution1
+)
+```
+
+
+## 2)
+
+#### 2)sql solution
+```{r}
+#sql solution
+
+sqldf_solution2<-function(){sqldf("SELECT
+      Users.DisplayName,
+      Users.Age,
+      Users.Location,
+      SUM(Posts.FavoriteCount) AS FavoriteTotal,
+      Posts.Title AS MostFavoriteQuestion,
+      MAX(Posts.FavoriteCount) AS MostFavoriteQuestionLikes
+FROM 
+Posts JOIN Users ON Users.Id=Posts.OwnerUserId
+WHERE Posts.PostTypeId=1
+GROUP BY OwnerUserId
+ORDER BY FavoriteTotal DESC
+LIMIT 10")}
+
+
+```
+#### Intuitive interpretation:
+We want to find ten users whose questions were liked the most in total. For each user we also want to know his age, location, the title of question which was liked the most among the ones asked by him, and the number of likes for this question
+
+\
+
+#### 2)base functions
+```{r}
+#base functions
+base_functions_solution2<-function(){
+
+join <- merge(Posts[Posts$PostTypeId == 1, ], Users, by.x = 'OwnerUserId', by.y = 'Id', all.x = T, all.y = F)
+  aggregated <- do.call(data.frame, 
+                    aggregate(
+                      FavoriteCount ~ OwnerUserId,
+                      data=join,
+                      FUN=function(x) c(total = sum(x), max = max(x))))
+  answer <- merge(aggregated, join, by.x = c('OwnerUserId', 'FavoriteCount.max'), 
+                  by.y = c('OwnerUserId', 'FavoriteCount'), all.x = T, all.y = F)
+  answer <- answer[c('DisplayName', 'Age', 'Location', 'FavoriteCount.total', 'Title', 'FavoriteCount.max')]
+  answer <- answer[order(answer$FavoriteCount.total, decreasing = T), ]
+  colnames(answer)[c(4, 5, 6)] = c('FavoriteTotal', 'MostFavoriteQuestion', 'MostFavoriteQuestionLikes')
+  rownames(answer) = NULL
+  head(answer, 10)}
+
+#comparing
+dplyr::all_equal(sqldf_solution2(),base_functions_solution2())
+
+
+```
+\
+
+#### 2)dplyr solution
+```{r}
+#dplyr solution
+dplyr_solutions2<-function(){
+    left_join(filter(Posts, PostTypeId == 1 & !is.na(OwnerUserId) & !is.na(FavoriteCount)), Users, 
+          c('OwnerUserId' = 'Id')) %>%
+  group_by(OwnerUserId) %>%
+  select(DisplayName, Age, Location, FavoriteCount, Title, OwnerUserId) %>%
+  summarise(
+    DisplayName = first(DisplayName),
+    Age = first(Age),
+    Location = first(Location),
+    MostFavoriteQuestion = Title[which.max(FavoriteCount)],
+    FavoriteTotal = sum(FavoriteCount),
+    MostFavoriteQuestionLikes = max(FavoriteCount)) %>%
+  select(DisplayName:MostFavoriteQuestionLikes) %>%
+  arrange(desc(FavoriteTotal)) %>%
+  head(10) -> a2_dplyr}
+
+#comparing
+dplyr::all_equal(sqldf_solution2(),dplyr_solutions2())
+
+
+```
+\
+
+#### 2)data.table solution
+```{r}
+
+
+PostsDT=setDT(Posts)
+
+datatable_solution2<-function(){
+
+  join <- merge(PostsDT[PostTypeId == 1], Users, by.x = 'OwnerUserId', by.y = 'Id', all.x = T, all.y = F)
+  join <- na.omit(join, cols = c('OwnerUserId', 'FavoriteCount'))
+  aggregated <- join[, .(MFQ = sum(FavoriteCount), MFQL = max(FavoriteCount)), by = OwnerUserId][order(-MFQ)]
+  answer <- merge(aggregated, join, by.x = c('OwnerUserId', 'MFQL'), 
+                  by.y = c('OwnerUserId', 'FavoriteCount'), all.x = T, all.y = F)
+  answer <- answer[, .(DisplayName, Age, Location, MFQ, Title, MFQL)][order(-MFQ)]
+  colnames(answer)[c(4, 5, 6)] = c('FavoriteTotal', 'MostFavoriteQuestion', 'MostFavoriteQuestionLikes')
+  head(answer, 10)}
+
+setDF(datatable_solution2())
+
+#comparing
+dplyr::all_equal(sqldf_solution2(),datatable_solution2())
+
+```
+\
+
+#### 2)compare the execution times
+```{r}
+library(microbenchmark)
+microbenchmark::microbenchmark(
+    sqldf2=sqldf_solution2,
+    base2=base_functions_solution2,
+    dplyr2=dplyr_solutions2,
+    data.table2=datatable_solution2
+)
+```
+
+# 3)
+
+#### 3)sql solution
+```{r}
+#sql solution
+sqldf_solution3<-function(){sqldf("SELECT
+Posts.Title,
+CmtTotScr.CommentsTotalScore
+FROM (
+SELECT
+PostID,
+UserID,
+SUM(Score) AS CommentsTotalScore
+FROM Comments
+GROUP BY PostID, UserID
+) AS CmtTotScr
+JOIN Posts ON Posts.ID=CmtTotScr.PostID AND Posts.OwnerUserId=CmtTotScr.UserID
+WHERE Posts.PostTypeId=1
+ORDER BY CmtTotScr.CommentsTotalScore DESC
+LIMIT 10
+")}
+```
+#### Intuitive interpretation:
+We want to find 10 questions under which author of the question got the biggest amount of score by making comments to this question. We want to see the titles of said questions and the sum of scores of comments made by the author of the question
+
+\
+
+#### 3)base functions
+```{r}
+#base functions
+base_functions_solution3<-function(){CmtTotScr<-aggregate(Score~PostId+UserId,data=Comments,sum)
+
+colnames(CmtTotScr)[3]<-"CommentsTotalScore"
+
+CmtTotScr_Post<-merge(CmtTotScr,data.frame(Posts)[Posts$PostTypeId==1,],by.x =c("PostId","UserId") ,by.y = c("Id","OwnerUserId")) 
+
+CmtTotScr_Post<-CmtTotScr_Post[order(-CmtTotScr_Post$CommentsTotalScore),]
+
+v<-CmtTotScr_Post[,c("Title","CommentsTotalScore")]
+
+v<-head(v,10)}
+
+#comparing
+dplyr::all_equal(base_functions_solution3(),sqldf_solution3())
+
+```
+\
+
+#### 3)dplyr solution
+```{r}
+#dplyr solution
+dplyr_solutions3=function(){CmtTotScr1<-Comments %>% group_by(PostId,UserId) %>% summarise(CommentsTotalScore=sum(Score))
+
+CmtTotScr_Post2<-inner_join(CmtTotScr1,Posts,by=c("PostId"="Id","UserId"="OwnerUserId"))
+
+CmtTotScr_Post2<-as.data.frame(filter(CmtTotScr_Post2,PostTypeId==1)) 
+
+Title_CommentsTotalScore<-select(CmtTotScr_Post2,Title,CommentsTotalScore)
+
+Title_CommentsTotalScore<-arrange(Title_CommentsTotalScore,desc(CommentsTotalScore))
+
+Title_CommentsTotalScore<-top_n(Title_CommentsTotalScore,10)}
+
+#comparing
+dplyr::all_equal(dplyr_solutions3(),sqldf_solution3())
+
+```
+\
+
+#### 3)data.table solution
+```{r}
+#data.table solution
+setDT(Comments)
+setDT(Posts)
+
+datatable_solution3<-function(){n<-Comments[, .(CommentsTotalScore=sum(Score)),by=.(PostId,UserId)]
+
+CmtTotScr_Post3<-merge.data.table(n,Posts,by.x =c("PostId","UserId") ,by.y = c("Id","OwnerUserId"))
+
+CmtTotScr_Post3<-CmtTotScr_Post3[PostTypeId==1]
+
+Title_CommentsTotalScore3<-CmtTotScr_Post3[,.(Title,CommentsTotalScore)][order(-
+                                                                                CommentsTotalScore)][1:10,]}
+
+setDF(datatable_solution3())
+
+#comparing
+dplyr::all_equal(datatable_solution3(),base_functions_solution3())
+
+```
+\
+
+#### 3)compare the execution times
+
+```{r}
+
+library(microbenchmark)
+microbenchmark::microbenchmark(
+    sqldf3=sqldf_solution3,
+    base3=base_functions_solution3,
+    dplyr3=dplyr_solutions3,
+    data.table3=datatable_solution3
+)
+```
+
+
+
+
+# 4)
+
+#### 4)sql solution
+```{r}
+sqldf_solution4<-function(){sqldf("SELECT DISTINCT
+Users.Id,
+Users.DisplayName,
+Users.Reputation,
+Users.Age,
+Users.Location
+FROM (
+SELECT
+Name, UserID
+FROM Badges
+WHERE Name IN (
+SELECT
+Name
+FROM Badges
+WHERE Class=1
+GROUP BY Name
+HAVING COUNT(*) BETWEEN 2 AND 10
+)
+AND Class=1
+) AS ValuableBadges
+JOIN Users ON ValuableBadges.UserId=Users.Id")}
+```
+#### Intuitive interpretation:
+We want to find users which were assigned a class 1 badge, additionally the badge had to be assigned at least 2 times and at most 10 times. We want to see their ID, Display Name, Reputation, Age and Location.
+
+\
+
+#### 4)base functions
+```{r}
+#base functions
+base_functions_solution4<-function(){e<-subset(Badges,Class==1,select=c(Name))
+
+d<-aggregate(e$Name,by=list(e$Name),FUN=length)
+
+colnames(d)<-c("Name","C")
+
+d1<-subset(d,C>=2 & C<=10,select=c(Name))
+
+b<-subset(Badges,Class==1,select = c(Name,UserId))
+
+ValuableBadges<-subset(b,b$Name=='visas'|b$Name=='Sheriff'|b$Name=='Reversal'|b$Name=='Constable')
+
+Users_ValueBadges<-merge(data.frame(Users) ,data.frame(ValuableBadges) ,by.x = "Id",by.y = "UserId")
+
+v<-unique(Users_ValueBadges[c("Id","DisplayName","Reputation","Age","Location")]) }
+
+#comparing
+dplyr::all_equal(base_functions_solution4(),sqldf_solution4())
+
+```
+\
+
+#### 4)dplyr solution
+```{r}
+#dolyr solution
+dplyr_solutions4<-function(){t<-Badges %>% filter(Class==1) %>% count(Name)
+t1<-t %>% filter(n>=2 & n<=10) %>% select(Name)
+
+ValuableBadges2<-Badges %>% filter(Name %in% t1$Name,Class==1) %>% select(Name,UserId)
+
+v<-inner_join(Users,ValuableBadges2,by=c("Id"="UserId"))
+
+v<-distinct(v,Id,DisplayName,Reputation,Age,Location)}
+
+#comparing
+dplyr::all_equal(dplyr_solutions4(),sqldf_solution4())
+
+```
+\
+
+#### 4)data.table solution
+```{r}
+#data.table solution
+setDT(Badges)
+setDT(Users)
+
+datatable_solution4<-function(){t3<-Badges[Class==1,.N,by=.(Name)][N<=10 & N>=2][,.(Name)]
+
+ValuableBadges3<-Badges[Name %in% c(t3[,Name])][Class==1]
+
+Users_ValueBadges3<-merge.data.table(Users,ValuableBadges3,by.x="Id",by.y = "UserId")
+
+Users_ValueBadges3<-unique(Users_ValueBadges3[,.(Id,DisplayName,Reputation,Age,Location)])}
+
+setDF(datatable_solution4())
+
+#comparing
+dplyr::all_equal(datatable_solution4(),sqldf_solution4())
+
+```
+\
+
+#### 4)compare the execution times
+```{r}
+
+microbenchmark::microbenchmark(
+    sqldf4=sqldf_solution4,
+    base4=base_functions_solution4,
+    dplyr4=dplyr_solutions4,
+    data.table4=datatable_solution4
+)
+```
+
+\
+
+# 5)
+
+#### 5)sql solution
+```{r}
+#sql solution
+
+sqldf_solution5<-function(){sqldf("SELECT
+Questions.Id,
+Questions.Title,
+BestAnswers.MaxScore,
+Posts.Score AS AcceptedScore,
+BestAnswers.MaxScore-Posts.Score AS Difference
+FROM (
+SELECT Id, ParentId, MAX(Score) AS MaxScore
+FROM Posts
+WHERE PostTypeId==2
+GROUP BY ParentId
+) AS BestAnswers
+JOIN (
+SELECT * FROM Posts
+WHERE PostTypeId==1
+) AS Questions
+ON Questions.Id=BestAnswers.ParentId
+JOIN Posts ON Questions.AcceptedAnswerId=Posts.Id
+WHERE Difference>50
+ORDER BY Difference DESC
+")}
+```
+#### Intuitive interpretation:
+We want to find the questions where the difference = max - accepted is the highest and at least 50, where max - maximum score of an answer to question, accepted - score of the accepted answer.
+
+In the output for each question we have to show its ID, title, max, accepted, difference [last three defined as above].
+
+\
+
+#### 5)base functions
+```{r}
+#base functions
+
+base_functions_solution5<-function(){a<-Posts[Posts$PostTypeId == 2, c("Id", "ParentId", "Score")]
+
+a1<-by(data=a,INDICES = list(a$ParentId),function(x) x[which.max(x$Score),])
+
+BestAnswers<-do.call(rbind,a1)
+
+colnames(BestAnswers)[3]<-"MaxScore"
+
+Questions<-Posts[Posts$PostTypeId==1,]
+
+Question_BestAnswer<-merge(Questions,BestAnswers,by.x="Id",by.y = "ParentId")
+
+Question_BestAnswer[is.na(Question_BestAnswer)]<-0
+
+Question_Post<-merge(Question_BestAnswer,Posts,by.x="AcceptedAnswerId",by.y = "Id")
+
+names(Question_Post)[names(Question_Post)=="Score.y"]<-"AcceptedScore"
+
+Question_Post[is.na(Question_Post)]<-0
+
+Question_Post$Difference<-Question_Post$MaxScore - Question_Post$AcceptedScore
+
+q<-Question_Post[Question_Post$Difference>50]
+
+q<-q[order(-q$Difference)]
+
+names(q)[names(q)=="Title.x"]<-"Title"
+
+ans<-q[,c("Id","Title","MaxScore","AcceptedScore","Difference")]}
+
+#comparing
+dplyr::all_equal(sqldf_solution5(),base_functions_solution5())
+
+```
+\
+
+#### 5)dplyr solution
+```{r}
+#dolyr solution
+dplyr_solutions5<-function(){
+    filter(Posts, PostTypeId == 2) %>%
+  group_by(ParentId) %>%
+  summarise(
+    Id = ParentId[which.max(Score)],
+    ParentId = ParentId[which.max(Score)],
+    MaxScore = max(Score)) %>%
+  right_join(filter(Posts, PostTypeId == 1), c('ParentId' = 'Id')) %>%
+  left_join(Posts, c('AcceptedAnswerId' = 'Id')) %>%
+  select(Id, Title = Title.x, MaxScore, AcceptedScore = Score.y) %>%
+  mutate(Difference = MaxScore - AcceptedScore) %>%
+  filter(Difference > 50 & !is.na(Difference)) %>%
+  arrange(desc(Difference))}
+
+#comparing
+dplyr::all_equal(dplyr_solutions5(),sqldf_solution5())
+
+```
+\
+
+#### 5)data.table solution
+```{r}
+#data.table solution
+PostsDT=setDT(Posts)
+
+datatable_solution5<-function(){
+    BestAnswers <- PostsDT[PostsDT[PostTypeId == 2, .I[which.max(Score)], by = ParentId]$V1]
+  BestAnswers <- BestAnswers[, .(Id, ParentId, MaxScore = Score)]
+  Questions <- merge(PostsDT[PostTypeId == 1], BestAnswers, by.x = 'Id', by.y = 'ParentId', all.x = F, all.y = T)
+  FinalJoin <- merge(Questions, PostsDT, by.x = 'AcceptedAnswerId', by.y = 'Id', all.x = T, all.y = F)
+  answer <- FinalJoin[, .(Id, Title = Title.x, MaxScore, AcceptedScore = Score.y, 
+                          Difference = MaxScore - Score.y)]
+  answer[Difference > 50][order(-Difference)]}
+
+setDF(datatable_solution5())
+
+#comparing
+dplyr::all_equal(datatable_solution5(),sqldf_solution5())
+
+```
+\
+
+#### 5)compare the execution times
+```{r}
+
+microbenchmark::microbenchmark(
+    sqldf5=sqldf_solution5,
+    base5=base_functions_solution5,
+    dplyr5=dplyr_solutions5,
+    data.table5=datatable_solution5
+)
+```
+
+
+
+### the End
+
+
+
+
