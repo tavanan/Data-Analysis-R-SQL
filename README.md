@@ -5,4 +5,4 @@ Obtain the equivalent result of a given SQL query from datasets using four diffe
 3. data.table package
 4. only basic functions in R
 
-Full description of the task is available on Assignment_description.pdf 
+Full description of the task and data sets thats is used is available on Assignment_description.pdf 
